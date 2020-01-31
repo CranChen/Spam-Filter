@@ -1,0 +1,405 @@
+---
+title: 'Final Project: Spam Filter Analysis'
+author: "CSZ"
+date: "December 7, 2018"
+output: html_document
+--- 
+
+## Group Member Info
+
+#### Group Name:  CSZ
+
+#### Members:  
+
+* Shuoqi Zhang (shuoqiz2)    
+* Yunan Shi    (shi38)  
+* Chuanqi Chen (chuanqi2)
+
+
+## Introduction and literature review 
+
+
+#### Data source information:   
+
+* Source: created in the late 1990s at Hewlett-Packard Labs, contains 4601 emails. 
+* Linnk:  [spam](https://archive.ics.uci.edu/ml/datasets/spambase)
+
+
+#### Introduction of the data:
+
+This collection of spam e-mails came from postmaster and individuals who had filed spam while non-spam e-mails came from filed work and personal e-mails. These are useful when constructing a personalized spam filter. There are 58 variables in total, and this spam dataset contains 4601 emails, of which 1813 are considered spam while the remaining are not spam.
+
+
+
+
+#### Scientific goal:  
+
+* Constructing Spam filter mainly by SVM,  Logistic regression and RandomForest
+* Test the performance of KNN, LDA and CART Model
+* Identifying the variables that contribute to the classification   
+* Comparing the quality of Spam filter for each Model, to choose the best classifier
+* Tuning the classifier decision rule to make it more sensible for a Spam filter since the harm of Type I error and Type II error are different     
+
+
+### _Import Packages_
+```{r, message = F}
+
+library("DataExplorer")
+library("e1071")
+library("kernlab")
+library("caret")
+library("class")
+library("MASS")
+library("tree")
+library("randomForest")
+library("ggplot2")
+library("corrplot")
+library("bubbles")
+
+```
+
+
+## Summary statistics and Data Visualization
+
+Import the data
+```{r}
+data("spam")
+dim(spam)
+summary(spam$type)
+```
+
+
+
+Show the average proportion of each Character or Number in the emails of spam and nonspam seperately
+```{r}
+
+nonspam = sapply(spam[spam$type == "nonspam",], as.numeric )
+onlyspam = sapply(spam[spam$type == "spam",], as.numeric )
+mean_spam = colMeans(onlyspam)
+mean_nonspam = colMeans(nonspam)
+bubbles(value = mean_spam[1:54], label = colnames(spam)[1:54],
+        color = rainbow(54, alpha=NULL)[sample(54)])
+bubbles(value = mean_nonspam[1:54], label = colnames(spam)[1:54],
+        color = rainbow(54, alpha=NULL)[sample(54)])
+
+```
+
+From the above two graphs, we omit the capital letters, and conclude several apparent statistical conclusions with words, numbers and characters. 
+In a spam email, the proportion of occurence of character like 'you', 'your','will', 'free' ,'our'  and charExclamation (!) are very high which means emails with these words and character (exclamation) appearance or repeatedly appearance are likely to be spam email.
+For a non-spam email, frequency of 'you', 'george', 'hp', "hpl', "re" and "will" is very high. In the same way, the occurrence of these words in emails are also likely categorized the emails as non-spam one.
+Numbers are not that obvious compared with words.
+
+
+
+Correlation Check
+```{r, fig.height=10, fig.width=10}
+
+corrplot( cor(spam[,-58]), method = "shade")
+
+```
+
+From the graph we can observe clear positive pattern(blue squares) comparing with negative pattern(red squares). The variables which show in the spam email or non-spam email in the same time will have a positive correlation; variables which show in the spam email and non-spam email in different time will have a negative correlation. Most of the variables have no or lower correlation, Therefore, collinear won't be a huge problem  if we use model of LDA and Logistic Regression to complete our goal.
+
+
+
+Permform PCA to visuzlize the whole dataset in low dimension
+```{r,fig.width=4, fig.height=3}
+# PCA
+pr.out = prcomp(log(spam[,-58]+1))
+pr.var = pr.out$sdev^2
+pve = pr.var/sum(pr.var)
+plot(pve , xlab=" Principal Component", 
+     ylab="Proportion", type="b", pch = 19, cex = 0.2)
+```
+
+
+From the line chart of _Proportion VS.Principal Component_, the PC1 accounts for about 50%, and pc2 accounts for 8%. Therefore, the 2D PCA visualization catches about 60% information of origninal dataset which is not high enough but still can help us to know the outline and tendency.
+
+
+
+```{r,  fig.width=3.5, fig.height=3}
+plot(pr.out$x[,1], pr.out$x[,2], col = c("darkorange", "deepskyblue")[spam$type], xlab = "PC1", ylab = "PC2", pch = 19, cex = 0.2, xlim = c(-4, 6))
+```
+
+
+The plot shows that there is a cleart boundary that could classify the type which encourage us to perform the classification techniques on this dataset. In addition, for the first PC, the most dominant variable is **all** with 0.04092317, while for the second PC, the most dominant varialbe is **our** with 0.09414561.
+
+
+
+## Proposed Analysis
+
+Our dataset has about 57 variables corresponding to 57 dimension which is somehow high dimension. In addition, each cell value represents the proportion of that words in the total email, therefore the value is a decimal. Therefore, even though each observation is exsits in a very high dimension, they will be crowded or even overlapped in a small space.
+
+For LDA which classify observations into class with the closest centroid in terms of Mahalanobis distance. It would perform bad when data points are too crowded. The inverse of Sigma also may not exist When p is very large. In addition, using the generalized inverse matrix can easily overfit the data. For KNN classification, which is simply take the mode of K nearest neighbor observations as the prediction for a specific observation. The too close or even same distance between two points would be a disaster for KNN model. Therefore, it would negatively affect the performance of KNN, LDA and other Models.
+
+In the case of this spam data, in order to control the test miss classification rate, SVM and Random Forest are my first choices since they are good at handle high-dimension problem. For SVM, it maximize the soft margin which separate two class with different kernel methods. The SVM classifier only depends on the support vectors. Random Forest is an advanced Classification tree model with bootstrap and randomness. It exhaustive search all the variables (dimensions) to maximize the Node Impurity Reduction. Therefore, even though our p is very large, it would only increate some computation but won't affect the performance.
+
+Logistic Model is a very classical and useful supervised Learning Technique. We are going to first fit this linear model. The model selection techniques can also help us improve the model, by bias-variance trade off, reduce the size, making it easier to interpret. We can also identify the significant variable which is also one of our Scientific Goal.
+
+### _Split Data_
+
+Split the original dataset into train data and test data to train the model and then get test missclassifiation rate to compare each models
+```{r}
+set.seed(1)
+index = sample(nrow(spam), 3000) 
+spam_trn = spam[index, ]
+spam_tst = spam[-index, ]
+```
+
+
+### _Logistic Regression_  
+
+Based on the statistics summary and data visualization, we try to find out the most significant variables which may determine the category of email(spam or non-spam). Since logistics regression is a standard approach for binary classification and useful supervised learning technique, we use it as our first testing model.  
+Take Logistic Regression as Bayes Classifier Simply classify an observation to the class (spam/nonspam) with the larger probability. In this two case, in order to minimize the misclassification rate, we take the cutoff = 0.5.
+Perform the logistic model on all the predictors on the training dataset. Then predict the test data to get the confusion table and misclassification rate
+
+```{r, warning=F}
+logistic_model_full = glm(type ~ . , data = spam_trn, family = "binomial")
+p_full = predict(logistic_model_full, newdata = spam_tst, type = "response")
+pred_full = ifelse(p_full > 0.5, "spam", "nonspam")
+(confusion_table_full = table(pred_full, spam_tst$type))
+(miss_rate_full = mean(pred_full != spam_tst$type))
+```
+
+Since we contain all the predictors in the model, it may cause overfitting in our logistics model. Therefore, it is necessary to do a model selection to choose a better model. Apply AIC standard and backward direction to perform the variable selection on the original full model.
+
+```{r, warning=F, message=F}
+# Perform the Variable Selection with backward AIC
+logistic_model = step(logistic_model_full, trace = 0)
+sort(summary(logistic_model)$coefficients[, "Pr(>|z|)"])[1:5]
+p = predict(logistic_model, newdata = spam_tst, type = "response")
+# free, charDollar, hp, capitalLong is the four most significant variable
+pred = ifelse(p > 0.5, "spam", "nonspam")
+(conftable_logistic = table(pred, spam_tst$type))
+(missrate_logistic = mean(pred != spam_tst$type))
+```
+
+After variable selection of full model, the misclassification rate lowered from  `r miss_rate_full`  to `r missrate_logistic` which shows out a better accuracy. The number of variables decreases a lot from 57 to 37 which make it easier for us to interpret. 
+In addition,  from the test results, the most significant four variables are free, charDollar, hp, capitalLong. CharDollar is character "\$", capitalLong is the longest length of uninterrupted capital letters; free and hp are two words. Therefore, according to the logistic regression, we can conclude that word free and hp, "$" and the longest length of uninterrupted capital letters might be the important factors to determine an email is spam or not. 
+
+
+
+
+
+### _RandomForest_
+Tree-based method is suitble for high-dimension data becaues it exaustive search for every variables and cutoff to find the best pair\(x_j, c\). Our dataset has 57 variables in total which represent 57 dimension, which is suspect to high dimension.
+The tree model partition the feature space into "similar region" by split rule then choose the mode in every region. 
+In addition to make a more robust and stable model, We can improve our tree model to add the technique of _bootstrap_ and _randomness_. As rule of thumb, choose \(m = seqt(p)\) in the classification case. For another parameter \(nodesize\), it controls the bias_variance tradeoff, therefore we use the cross validation to select a reasonable value.
+
+```{r, fig.width=4, fig.height=3}
+set.seed(1)
+mtry = round( sqrt( length(names(spam)) -1 ) )
+# Choose Best NodeSize
+nodesize = seq(1, 30, by = 3)
+TestErrorRate = numeric(length(nodesize))
+for( i in 1:length(nodesize) ){
+  rf.fit = randomForest(type ~ ., data = spam_trn, ntree = 300, mtry = mtry, nodesize = nodesize[i])
+  pred_type = predict(rf.fit, spam_tst ,type = "class")
+  TestErrorRate[i] = mean(pred_type != spam_tst$type)
+}
+plot(nodesize, TestErrorRate, type = "b")
+
+(best_nodesize = nodesize[TestErrorRate==min(TestErrorRate)])
+```
+
+The nodesize stands for the maximum number of observations in the terminal nodes. In this case it is `r best_nodesize`.
+Then we fit the randomForest model with the best paramter made by cross validation
+```{r, fig.width=5, fig.height=6}
+# Fit the RandomForest Model with the best nodesize
+rf.spam = randomForest(type ~ ., data = spam_trn, ntree = 300, mtry = mtry, nodesize = best_nodesize,importance = T)
+pred_rf = predict(rf.spam, spam_tst,type = "class")
+(conftable_RT = table(pred_rf, spam_tst$type))
+(missrate_RT = mean(pred_rf != spam_tst$type))
+# Check the importance of variables.
+sort(importance(rf.spam)[, "MeanDecreaseAccuracy"], decreasing = T)[1:5]
+varImpPlot(rf.spam)
+# charExclamation, charDollar, remove, capitalAve, hp is the most five important variable
+``` 
+
+Higher **Variance Importance** means larger loss of accuracy due to the loss of information on varible \(x_j\), hence more important.The graph shows two standards _MeanDecreaseAccuracy_ and _MeanDecreaseGini_ that mesuare the importance of variables. The first one take the missclassification rate while the second take node impurity Gini as measurement. Our goal is to lower the missclassification rate therefore, choose the first one. From the view of _MeanDecreaseAccuracy_ the most five important variables are **charExclamation**, **charDollar**, **remove**, **capitalAve** and **hp** which have an overlap with the most significant variable of Logistic regresison. 
+
+
+
+## _SVM_    
+Random Forest is indeed a good model for applying the dataset. However, SVM only depends on support vectors and it also works very well for high dimension data since it is automatically regularized. Picking the widest separation margin is a way to automatically regularize. Therefore, we also picked SVM as our main model to see the accuracy and results.
+
+```{r}
+# Radial Kernel
+tune.out = tune(
+  svm,
+  type ~ .,
+  data = spam_trn,
+  kernel = "radial",
+  ranges = list(gamma = c(0.001,0.005, 0.01,0.05),
+                cost = seq(150,250, by = 20))
+  
+)
+tune.out$best.parameters
+svm.fit = tune.out$best.model
+pred = predict(svm.fit, spam_tst)
+conftable_SVM = table(pred, spam_tst$type)
+missrate_svm = mean( pred != spam_tst$type)
+
+```
+
+
+After crossvalitdation tune,we choose radinal kernel with gamma  = `r as.numeric(tune.out$best.parameters)[1]` and cost = `r as.numeric(tune.out$best.parameters)[2]`. The error is very low, SVM performs very well. 
+
+
+
+Assumptions about LDA and KNN is not good since their performance is not good enough for high-dimension data. In addition, they don't have the technique correspoinding to Variable selection like Logistic Regression. However, one of our goal is to "buid many classification models and choose the best one". We will still fit the modes to test our assumptions and compare with other models but with less analysis.
+
+### _LDA & QDA_
+Attempt to utilize the linear (quandaraic ) discriminat analysis to classify data. The mechenism behind this is first find \(\hat\mu\), \(\hat \Sigma\) and \(\hat \pi\) then put them into bayes equation to get Posterior Distribution. From above analysis the high corrlation and skew of proportion of respones are not a problem. However, the the data is somewhat "high dimension", therefore, the results of LDA and Qda may not be satisfying enough.
+```{r, error = T}
+# LDA
+lda.model = lda(type ~ ., data = spam_trn)
+class_pred = predict(lda.model, spam_tst)$class
+(conftable_LDA = table(class_pred, spam_tst$type))
+(missrate_LDA = mean(class_pred != spam_tst$type))
+```
+
+The test missclassification rate for the LDA model is `r missrate_LDA` which is much higher than the corresponding selected logistic model.  
+
+
+
+
+### _KNN_
+
+For KNN algorithm, the critical step is to select the best tune parameter k. The most gerneral method is cross validation. A 3th-fold cross validation is performed on the KNN model to test for a seqence of k. The **caret** package is used to train a sequency of models and report the accuracy.
+```{r}
+# Cross Validation to Select k
+set.seed(2)
+train.x = spam_trn[,-58]
+train.y = spam_trn$type
+grid = expand.grid(k = seq(1,20,by = 2))
+(knn.fit = train(train.x, train.y, method = "knn", trControl = trainControl(method = "cv", 3), tuneGrid = grid))
+# The best k = 1
+knn_pred = predict(knn.fit, newdata = spam_tst)
+(conftable_knn = table(knn_pred, spam_tst$type))
+(missrate_knn = mean(knn_pred != spam_tst$type))
+```
+KNN doesn't perform well.
+
+
+## _Classification Tree_
+After apply the normal surpvised clssification technique, consider the Tree_based method. Classification Tree is good for interpretation since we do the prediction after split data into different feature space based on the split rule. However, there is still an big disadtantage bacause of test predition error caused by overfitting. Therefore prune is nessary to build an stable model. We use tree() method in the tree package to help use grow and prune the tree.
+
+As KNN, cross validtioin is still used to tune the paratemer alpha which corresponds to different Tree size |T|. The plot below show the relationship between the _nodesize_ and _deviance of cross validation_. 
+
+```{r, fig.width=4,fig.height=3}
+# Build the whole Tree
+Tree_Full = tree(type ~ ., data = spam_trn)
+# Cross Validation to Select Best Tune Parameter
+cv.Tree = cv.tree(Tree_Full, FUN = prune.misclass)
+plot(cv.Tree$size, cv.Tree$dev, type = "b", pch = 19)
+best.node = cv.Tree$size[cv.Tree$dev == min(cv.Tree$dev)][1]
+```
+
+
+A final tree modle is built based on the best tune paramter.   
+The below tree graph shows the split rule including selected variable \(X_j\) and cutoff \(c\), branches and ternimal nodes which is `r best.node`
+```{r}
+# Prune the Tree by the best node
+Tree_Final = prune.misclass(Tree_Full, best = best.node)
+plot(Tree_Final)
+text(Tree_Final)
+# Make Prediciton & Test Missclassifictaion Rate
+Pred_Final = predict(Tree_Final, spam_tst, type = "class")
+(conftable_CT = table(Pred_Final, spam_tst$type))
+(missrate_CT = mean( Pred_Final != spam_tst$type))
+```
+
+The missclassifiation rate is similar with LDA which is better than KNN, but still cannot campared with Logistic Classifier.
+
+
+
+### _Sensitivity & Specificity Analysis_
+
+In our case, classification of spam, the harm of these errors are unequal. We can't allow important information, say, a job offer, miss our inbox and get sent to the spam folder. On the other hand, the spam email that would make it to an inbox (false negatives) are easily dealt with, just delete them. Therefore, instead of simply evaluating a classifier based on its misclassification rate (or accuracy), we'll create two additional functions,to calculate sensitivity and specificity.   
+
+For Spam filter, we want to lower the rate which the useful(non-spam) email to be classified into spam. Therefore, we want to lower the False Postive Rate which means improve specificity. An effective way is to modify the cutoff in Logisticl Classifier.
+
+* From above all we have many usel Models to successfully classify the spam with high accruacy.
+* The Error of **False Postive** is much more harmful than **False Negtive** for the Spam Filter.
+* Improve **sensitivity** or **specificity** at the expense of the **overall accuracy**  
+
+```{r}
+# Sensitivity: True positive rate
+get_sens = function(conf_mat) { 
+  conf_mat[2, 2] / sum(conf_mat[, 2])
+}
+# Specificity: True negative rate
+get_spec = function(conf_mat) { 
+  conf_mat[1, 1] / sum(conf_mat[, 1])
+}
+# Original Logistic Classifier
+get_sens(conftable_logistic)
+get_spec(conftable_logistic)
+
+#Modify Cutoff to Improve Specificity
+Modified_Cutoff = seq(0.1, 0.9, by = 0.1)
+specificity = numeric(length(Modified_Cutoff))
+Sensitivity = numeric(length(Modified_Cutoff))
+Missrate =   numeric(length(Modified_Cutoff))
+
+for(i in 1:length(Modified_Cutoff)){
+  
+  tst_pred_Modified = ifelse(predict(logistic_model, spam_tst, type = "response") > Modified_Cutoff[i], "spam", "nonspam")
+  conftable_Modified = table(tst_pred_Modified, spam_tst$type)
+  Missrate[i] = mean(tst_pred_Modified != spam_tst$type)
+  Sensitivity[i] = get_sens(conftable_Modified)
+  specificity[i] = get_spec(conftable_Modified)
+    
+}
+
+plot(Modified_Cutoff, Missrate, type = "l", col = "black", ylim = c(0,1), ylab = "Miss & Sens & spec" )
+points(Modified_Cutoff, Sensitivity, type = "l", col = "darkorange")
+points(Modified_Cutoff, specificity, type = "l", col = "deepskyblue")
+
+
+
+```
+
+In the plot, black represents the test missclassificaiton rate while orange is Sensitivity and blue is specificity. 
+From this plot,  the missclassification rate is the lowerest at when cutoff = 0.5 which is corresponding to Bayes Classifier. Specificity is keep increasing with bigger Cutoff while Sensitivity is decreasing. This is the idea that Improve **sensitivity**  at the expense of the **overall accuracy**  and **specificity**. Since the significant harm of False Postive, we plan to choose cutoff = 0.9, to make it largest.
+
+
+```{r}
+Results = data.frame(c(Missrate[9], missrate_logistic, missrate_LDA, missrate_knn, missrate_CT, missrate_RT,missrate_svm),
+                     c(Sensitivity[9], get_sens(conftable_logistic), get_sens(conftable_LDA), get_sens(conftable_knn), get_sens(conftable_CT), get_sens(conftable_RT),get_sens(conftable_SVM) ),
+                     c(specificity[9], get_spec(conftable_logistic), get_spec(conftable_LDA), get_spec(conftable_knn), get_spec(conftable_CT), get_spec(conftable_RT),get_spec(conftable_SVM) ))
+rownames(Results) = c("Modified Logistic","Logistic", "LDA","KNN", "Classification Tree", "Random Forest","SVM")
+colnames(Results) = c("Missclassification", "Sensitivity", "Specificity")
+Results
+```
+
+According to this Final Restuls, Randomforsest Model is the best in the view of Test Missclassification Rate, SVM with radial is the second. For a more practical use of spam filter (pay much more attention on Specificity), We choose the selected Logistic classifier with 0.9 cutoff.  
+
+
+
+## Conclusion and Discussion
+
+### Summary of Scientific Findings:
+
+* Most of the Classification Model work successfully in this Spam Filter   
+* Random Forest and SVM are the best for the Spam Filter in the view of miss classification rate   
+* charDollar("$"), word "hp" and charExclamation("!") are the most effective variables for the spam filter, the "uninterrupted capita"l words  also has some influence on spam filter.   
+* Miss Rate: Random Forest is much less than Classification Tree, which indicates that bootstrap and randomness play important roles in the prediction error and model stability.    
+* From the test misclassification rate, it proves our assumptions before that KNN and LDA are bad for this high-dimension and crowded-points data.    
+* Combining with the harmful of Type I and Type II error, we tune the cutoff = 0.9 in the Logistic Model to make a more reasonable and practical spam filter.    
+
+### Potential Pitfalls:  
+The whole dataset has only 4601 rows which is not enough to train and test our models sufficiently. To make the results more convincing, it would be better to gather more emails and collect more data information. In addition  This dataset is from Year 1999, therefore, the information extracted from each email could be outdated, to keep our spam filter as well as the analysis fashion and practical, we need to keep updating our spam database. 
+
+
+### Concluding Remarks:
+After this project, we  constructed a both theoretical-perfect and practical spam filter according to the dataset, what we need to do in the future is maintaining it with different emails data. 
+This project offer us an opportunity to apply what we learned throughout the whole semester and apply them on real-world problems. 
+
+
+
+
+
+
+
